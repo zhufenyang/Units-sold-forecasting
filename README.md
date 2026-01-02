@@ -96,3 +96,9 @@ XGBoost / LGBM | xx | yy | zz
 
 ## 📜 License
 Educational and research use only.
+
+## Run Training Pipeline
+
+```bash
+python src/train.py
+
