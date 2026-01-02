@@ -62,6 +62,26 @@ The raw dataset is cleaned and explored to understand distributions, missing val
 Feature Engineering
 Relevant features are selected and transformed to better capture sales patterns.
 
+Modeling Approach
+
+A LightGBM regression model is used as the primary forecasting model.
+The target variable (Units Sold) is log-transformed using log1p to stabilize variance.
+
+Feature engineering includes:
+
+Lagged demand features (1, 7, 14, 28 days)
+
+Rolling mean and standard deviation
+
+Time-based features (day of week, month, weekend)
+
+Frequency encoding for high-cardinality identifiers (Store ID, Product ID)
+
+The dataset is split using a time-based validation strategy to avoid data leakage.
+Model performance is evaluated using RMSE, MAE, and RMSLE on the validation set.
+
+Several baseline models (Linear Regression and Random Forest) are implemented for comparison.
+
 Model Training
 Machine learning models are trained using historical data to forecast units sold.
 
