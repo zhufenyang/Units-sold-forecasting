@@ -1,88 +1,110 @@
-Units Sold Forecasting
-Project Description
+Project Overview
 
-This project aims to forecast the number of units sold at a retail store using various factors such as inventory levels, prices, weather, etc. Through data cleaning, exploratory analysis, feature engineering, and machine learning models, the goal is to make accurate sales predictions.
+This project focuses on forecasting the number of units sold in a retail store using multiple influencing factors such as inventory levels, product pricing, and weather conditions. The goal is to explore the dataset, engineer meaningful features, and apply machine learning models to predict future sales more accurately.
+
+This project is designed as a practical data science and machine learning exercise, covering the full workflow from data cleaning to model evaluation.
 
 Dataset
 
-The dataset used in this project is from Kaggle: Retail Store Sales Forecasting
-. The dataset contains the following columns:
+The dataset used in this project comes from Kaggle:
+Retail Store Sales Forecasting Dataset
 
-date: The date of the sales transaction
+It includes historical retail data with variables that may affect daily sales performance, such as:
 
-sales: The number of units sold on that day
+Date
 
-price: The price of the product
+Units sold
 
-inventory: The inventory level on that day
+Product price
 
-weather: Weather condition on that day
+Inventory level
 
-Other possible factors affecting sales
+Weather conditions
 
-Technologies Used
+Other operational features
+
+Tools and Technologies
 
 Python
 
 Jupyter Notebook
 
-Pandas - For data processing
+Pandas for data manipulation
 
-Matplotlib/Seaborn - For data visualization
+Matplotlib and Seaborn for data visualization
 
-Scikit-learn - For model training and prediction
+Scikit-learn for machine learning modeling
 
 Project Structure
-Units-sold-forecasting/
-│
-├── Data cleaning and understanding.ipynb   # Data cleaning and initial exploration
-├── Feature Engineering.ipynb               # Feature engineering
-├── Model.ipynb                            # Model training and forecasting
-├── retail_store_inventory.csv             # The dataset
-└── README.md                              # Project documentation
 
-How to Use
+The repository is organized as follows:
 
-Clone the Repository
-Clone the repository to your local machine.
+Data cleaning and understanding.ipynb
+Handles data cleaning, preprocessing, and initial exploratory data analysis.
 
-Install Dependencies
-Install the required Python libraries by using the provided requirements.txt file.
+Feature Engineering.ipynb
+Focuses on creating and transforming features to improve model performance.
 
-Run Jupyter Notebook
-Start Jupyter Notebook and open the Data cleaning and understanding.ipynb notebook to begin processing the data.
+Model.ipynb
+Contains model training, prediction, and evaluation steps.
 
-Train the Model and Make Predictions
-Open the Model.ipynb notebook to train various machine learning models and forecast the number of units sold. Evaluate the models' performance and compare results.
+retail_store_inventory.csv
+The original dataset used for analysis and modeling.
+
+README.md
+Project documentation.
+
+Workflow
+
+Data Cleaning and Exploration
+The raw dataset is cleaned and explored to understand distributions, missing values, and relationships between variables.
+
+Feature Engineering
+Relevant features are selected and transformed to better capture sales patterns.
+
+Model Training
+Machine learning models are trained using historical data to forecast units sold.
 
 Model Evaluation
+Model performance is evaluated using standard regression metrics.
 
-The following evaluation metrics are used to assess the performance of the forecasting models:
+Model Evaluation Metrics
 
-RMSE (Root Mean Squared Error)
+The following metrics are used to assess model performance:
 
-R² (Coefficient of Determination)
+Root Mean Squared Error (RMSE)
 
-These metrics help evaluate the accuracy of the predictions.
+R-squared (R²)
 
-Visualization and Analysis
+These metrics help quantify prediction accuracy and model reliability.
 
-Matplotlib and Seaborn are used in this project for visualizing the data, including:
+Visualization
 
-Time series plots of sales data
+The project includes visual analysis such as:
+
+Sales trends over time
+
+Relationships between sales and key variables
 
 Comparison between predicted and actual sales values
 
+Visualizations help interpret model behavior and business insights.
+
 Future Improvements
 
-Add more features (e.g., promotions, competitor prices) to improve forecast accuracy.
+Potential enhancements for this project include:
 
-Use more advanced time-series forecasting models (e.g., SARIMA, Prophet) for comparison.
+Incorporating additional features such as promotions or competitor pricing
 
-Implement automated testing and validation for the models.
+Applying time-series-specific models such as SARIMA or Prophet
+
+Performing cross-validation to improve model robustness
+
+Converting notebooks into reusable Python scripts or a simple web app
 
 References
 
-Kaggle: Retail Store Sales Forecasting Dataset
+Kaggle Retail Store Sales Forecasting Dataset
+https://www.kaggle.com/datasets/anirudhchauhan/retail-store-inventory-forecasting-dataset
 
 Scikit-learn Documentation
