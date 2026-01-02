@@ -1,13 +1,297 @@
-from lightgbm import LGBMRegressor
-from data_preprocessing import load_and_clean_data
+#!/usr/bin/env python3
+"""
+src/train.py
 
-def main():
-    X, y = load_and_clean_data("retail_store_inventory.csv")
+Main, clean training entrypoint for Units Sold Forecasting.
+- Single canonical pipeline: load -> preprocess -> features -> time split -> LightGBM train -> eval -> save
+- Saves model, feature list, validation preds and metrics to outputs/.
+"""
 
-    model = LGBMRegressor(random_state=42)
-    model.fit(X, y)
+import argparse
+import json
+import os
+from pathlib import Path
+import time
+import warnings
 
-    print("Training finished")
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import lightgbm as lgb
+
+warnings.filterwarnings("ignore")
+
+# ------------------ Config defaults ------------------
+DEFAULT_DATA = "data/retail_store_inventory.csv"
+DEFAULT_MODEL_OUT = "models/lightgbm_checkpoint.txt"
+DEFAULT_FEATURES_OUT = "outputs/features/features_list.json"
+DEFAULT_METRICS_OUT = "outputs/metrics/metrics.json"
+DEFAULT_PREDS_OUT = "outputs/preds/valid_preds.npy"
+
+DATE_COL = "Date"
+TARGET = "Units Sold"
+GROUP_KEYS = ["Product ID", "Store ID"]
+LAGS = [1, 7, 14, 28]
+ROLL_WINDOWS = [7, 14]
+
+# ------------------ Metrics ------------------
+def rmsle_raw(y_true, y_pred):
+    y_true = np.maximum(0, np.array(y_true))
+    y_pred = np.maximum(0, np.array(y_pred))
+    return np.sqrt(np.mean((np.log1p(y_pred) - np.log1p(y_true)) ** 2))
+
+
+# ------------------ I/O / load ------------------
+def load_data(path: str) -> pd.DataFrame:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Data file not found: {path}")
+    df = pd.read_csv(p)
+    if DATE_COL in df.columns:
+        df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
+    else:
+        raise RuntimeError(f"Date column '{DATE_COL}' not found in data")
+    return df
+
+
+# ------------------ Feature engineering helpers ------------------
+def create_time_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["day_of_week"] = df[DATE_COL].dt.dayofweek.astype("int8")
+    df["is_weekend"] = df["day_of_week"].isin([5, 6]).astype("int8")
+    df["month"] = df[DATE_COL].dt.month.astype("int8")
+    # week as integer (pandas >=1.1: isocalendar())
+    try:
+        df["week"] = df[DATE_COL].dt.isocalendar().week.astype("int16")
+    except Exception:
+        df["week"] = df[DATE_COL].dt.week.astype("int16")
+    return df
+
+
+def frequency_encoding(df: pd.DataFrame, cols):
+    df = df.copy()
+    for c in cols:
+        if c in df.columns:
+            freq = df[c].value_counts(normalize=True)
+            df[c + "_freq"] = df[c].map(freq).fillna(0.0)
+    return df
+
+
+def make_lag_features(df: pd.DataFrame, group_cols, target_col="y") -> pd.DataFrame:
+    """
+    Create lag and rolling features per group (group_cols).
+    Shift is used to avoid leakage.
+    """
+    df = df.sort_values(group_cols + [DATE_COL]).copy()
+
+    def _make(g):
+        g = g.sort_values(DATE_COL)
+        for lag in LAGS:
+            g[f"lag_{lag}"] = g[target_col].shift(lag)
+        for w in ROLL_WINDOWS:
+            g[f"roll_mean_{w}"] = g[target_col].shift(1).rolling(window=w, min_periods=1).mean()
+            g[f"roll_std_{w}"] = g[target_col].shift(1).rolling(window=w, min_periods=1).std().fillna(0)
+        g["days_since_prev"] = (g[DATE_COL] - g[DATE_COL].shift(1)).dt.days.fillna(0)
+        return g
+
+    df = df.groupby(group_cols, group_keys=False).apply(_make).reset_index(drop=True)
+    return df
+
+
+# ------------------ Main pipeline ------------------
+def train_pipeline(
+    data_path: str,
+    model_out: str,
+    features_out: str,
+    metrics_out: str,
+    preds_out: str,
+    test_size: float = 0.2,
+    seed: int = 42,
+):
+    t0 = time.time()
+    data_path = Path(data_path)
+    model_out = Path(model_out)
+    features_out = Path(features_out)
+    metrics_out = Path(metrics_out)
+    preds_out = Path(preds_out)
+
+    # make output dirs
+    for p in [model_out.parent, features_out.parent, metrics_out.parent, preds_out.parent]:
+        p.mkdir(parents=True, exist_ok=True)
+
+    # load
+    df = load_data(str(data_path))
+    print(f"[INFO] loaded {len(df)} rows from {data_path}")
+
+    # required columns: keep those present
+    candidate_cols = [
+        DATE_COL, "Store ID", "Product ID", "Category", "Region",
+        "Inventory Level", "Units Sold", "Units Ordered", "Price",
+        "Discount", "Competitor Pricing", "Weather Condition",
+        "Holiday/Promotion", "Seasonality"
+    ]
+    keep = [c for c in candidate_cols if c in df.columns]
+    df = df[keep].copy()
+
+    # drop rows missing date or target
+    df = df.dropna(subset=[DATE_COL, TARGET])
+    df = df.sort_values(GROUP_KEYS + [DATE_COL]).reset_index(drop=True)
+
+    # target transform
+    df["y"] = np.log1p(df[TARGET].astype(float))
+
+    # basic numeric fills (median)
+    num_fill_cols = [c for c in ["Price", "Competitor Pricing", "Discount", "Inventory Level", "Units Ordered"] if c in df.columns]
+    for c in num_fill_cols:
+        df[c] = df[c].fillna(df[c].median())
+
+    # time features
+    df = create_time_features(df)
+
+    # frequency encoding
+    enc_cols = [c for c in ["Store ID", "Product ID"] if c in df.columns]
+    df = frequency_encoding(df, enc_cols)
+
+    # sku-store freq
+    if "Store ID" in df.columns and "Product ID" in df.columns:
+        df["sku_store"] = df["Product ID"].astype(str) + "|" + df["Store ID"].astype(str)
+        df["sku_store_freq"] = df["sku_store"].map(df["sku_store"].value_counts(normalize=True)).fillna(0.0)
+
+    # lag features
+    df = make_lag_features(df, GROUP_KEYS, target_col="y")
+
+    # fill lag/roll NAs with median then 0 fallback
+    lag_cols = [c for c in df.columns if c.startswith("lag_") or c.startswith("roll_")]
+    for c in lag_cols:
+        if df[c].isna().all():
+            df[c] = 0.0
+        else:
+            df[c] = df[c].fillna(df[c].median()).fillna(0.0)
+
+    # categorical cast for lgb
+    cat_cols = [c for c in ["Category", "Region", "Weather Condition", "Seasonality"] if c in df.columns]
+    for c in cat_cols:
+        df[c] = df[c].astype("category")
+
+    # features selection
+    features = []
+    base_nums = [c for c in ["Inventory Level", "Price", "Discount", "Competitor Pricing", "Units Ordered"] if c in df.columns]
+    features += base_nums
+    features += lag_cols
+    features += [c for c in ["Store ID_freq", "Product ID_freq", "sku_store_freq", "day_of_week", "is_weekend", "month", "week", "days_since_prev"] if c in df.columns]
+    features += cat_cols
+    # dedupe, ensure present
+    features = [f for f in pd.unique(features) if f in df.columns]
+    print(f"[INFO] final feature count: {len(features)}")
+
+    # time-based split
+    df = df.sort_values(DATE_COL).reset_index(drop=True)
+    split_idx = int(len(df) * (1.0 - test_size))
+    train = df.iloc[:split_idx].reset_index(drop=True)
+    valid = df.iloc[split_idx:].reset_index(drop=True)
+
+    X_train = train[features]
+    y_train = train["y"]
+    X_valid = valid[features]
+    y_valid = valid["y"]
+
+    # prepare lgb datasets
+    cat_feats_lgb = [c for c in cat_cols if c in features]
+    lgb_train = lgb.Dataset(X_train, label=y_train, categorical_feature=cat_feats_lgb, free_raw_data=False)
+    lgb_valid = lgb.Dataset(X_valid, label=y_valid, categorical_feature=cat_feats_lgb, reference=lgb_train, free_raw_data=False)
+
+    params = {
+        "objective": "regression",
+        "metric": "rmse",
+        "boosting_type": "gbdt",
+        "learning_rate": 0.05,
+        "num_leaves": 64,
+        "max_depth": 9,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "min_child_samples": 20,
+        "verbose": -1,
+        "seed": seed,
+    }
+
+    print("[INFO] training LightGBM...")
+    bst = lgb.train(
+        params,
+        lgb_train,
+        num_boost_round=3000,
+        valid_sets=[lgb_train, lgb_valid],
+        valid_names=["train", "valid"],
+        callbacks=[lgb.early_stopping(stopping_rounds=100), lgb.log_evaluation(period=100)],
+    )
+
+    # predict & inverse-transform
+    pred_log = bst.predict(X_valid, num_iteration=bst.best_iteration)
+    pred = np.expm1(pred_log)
+    y_true = np.expm1(y_valid)
+
+    rmse = np.sqrt(mean_squared_error(y_true, pred))
+    mae = mean_absolute_error(y_true, pred)
+    rmsle_val = rmsle_raw(y_true, pred)
+
+    print(f"[RESULT] best_iter={bst.best_iteration}  RMSE={rmse:.4f}  MAE={mae:.4f}  RMSLE={rmsle_val:.4f}")
+
+    # feature importance (gain)
+    try:
+        fi = pd.Series(bst.feature_importance(importance_type="gain"), index=features).sort_values(ascending=False)
+        print("[INFO] top features:\n", fi.head(15).to_string())
+    except Exception:
+        print("[WARN] feature importance not available")
+
+    # save artifacts
+    bst.save_model(str(model_out))
+    with open(features_out, "w") as f:
+        json.dump(features, f)
+    # save preds (original scale)
+    np.save(preds_out, pred)
+    # metrics json
+    metrics = {
+        "rmse": float(rmse),
+        "mae": float(mae),
+        "rmsle": float(rmsle_val),
+        "best_iteration": int(bst.best_iteration),
+        "n_train": int(len(train)),
+        "n_valid": int(len(valid)),
+        "features_count": len(features),
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with open(metrics_out, "w") as f:
+        json.dump(metrics, f, indent=2)
+
+    print(f"[SAVED] model -> {model_out}")
+    print(f"[SAVED] features -> {features_out}")
+    print(f"[SAVED] preds -> {preds_out}")
+    print(f"[SAVED] metrics -> {metrics_out}")
+    print(f"[ELAPSED] {time.time() - t0:.1f} sec")
+
+    return metrics
+
+
+# ------------------ CLI ------------------
+def parse_args():
+    p = argparse.ArgumentParser(description="Train main LightGBM pipeline for Units Sold Forecasting")
+    p.add_argument("--data", default=DEFAULT_DATA, help="path to CSV data")
+    p.add_argument("--model_out", default=DEFAULT_MODEL_OUT, help="path to save model")
+    p.add_argument("--features_out", default=DEFAULT_FEATURES_OUT, help="path to save feature list (json)")
+    p.add_argument("--metrics_out", default=DEFAULT_METRICS_OUT, help="path to save metrics (json)")
+    p.add_argument("--preds_out", default=DEFAULT_PREDS_OUT, help="path to save validation predictions (.npy)")
+    p.add_argument("--test_size", type=float, default=0.2, help="validation ratio (time-based)")
+    p.add_argument("--seed", type=int, default=42, help="random seed")
+    return p.parse_args()
+
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    train_pipeline(
+        data_path=args.data,
+        model_out=args.model_out,
+        features_out=args.features_out,
+        metrics_out=args.metrics_out,
+        preds_out=args.preds_out,
+        test_size=args.test_size,
+        seed=args.seed,
+    )
